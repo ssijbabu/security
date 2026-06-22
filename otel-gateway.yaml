@@ -1,0 +1,800 @@
+################################################################################
+# OpenTelemetry Gateway — Production Deployment
+#
+# Role: central aggregation point that receives OTLP from all node-level
+#       collectors, applies cluster-wide processors, and fans out to backends
+#       (Jaeger, Prometheus remote write, object storage, etc.).
+#
+# Non-root enforcement:
+#   - runAsUser: 65534 (nobody); runAsNonRoot: true
+#   - capabilities.drop: [ALL] — no adds required
+#   - readOnlyRootFilesystem: true
+#
+# HA: minimum 2 replicas, HPA scales to 10, TopologySpreadConstraints ensure
+#     pods are spread across failure domains.
+#
+# Image pinning: replace the tag with a digest before shipping:
+#   crane digest otel/opentelemetry-collector-contrib:0.115.0
+################################################################################
+
+---
+# ── Namespace ──────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-gateway
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: opentelemetry
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+
+---
+# ── ResourceQuota ──────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: otel-gateway
+  namespace: otel-gateway
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: quota
+spec:
+  hard:
+    requests.cpu: "10"
+    requests.memory: 20Gi
+    limits.cpu: "20"
+    limits.memory: 40Gi
+    pods: "20"
+    services: "5"
+    configmaps: "10"
+    persistentvolumeclaims: "0"
+
+---
+# ── LimitRange ─────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: otel-gateway
+  namespace: otel-gateway
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: limitrange
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "1"
+        memory: 2Gi
+      defaultRequest:
+        cpu: 500m
+        memory: 1Gi
+      max:
+        cpu: "4"
+        memory: 8Gi
+      min:
+        cpu: 100m
+        memory: 128Mi
+
+---
+# ── ServiceAccount ─────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-gateway
+  namespace: otel-gateway
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: serviceaccount
+  annotations:
+    kubernetes.io/enforce-mountable-secrets: "true"
+automountServiceAccountToken: false
+
+---
+# ── Role + RoleBinding (namespace-scoped — gateway needs no cluster access) ────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: otel-gateway
+  namespace: otel-gateway
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [serviceaccounts/token]
+    verbs: [create]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: otel-gateway
+  namespace: otel-gateway
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: otel-gateway
+subjects:
+  - kind: ServiceAccount
+    name: otel-gateway
+    namespace: otel-gateway
+
+---
+# ── ConfigMap ──────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-gateway-config
+  namespace: otel-gateway
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: config
+data:
+  config.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+        path: /healthz
+      pprof:
+        endpoint: 0.0.0.0:1777
+
+    receivers:
+      # Accept OTLP from all node-level collectors.
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+            max_recv_msg_size_mib: 16
+            keepalive:
+              server_parameters:
+                max_connection_age: 10m
+                max_connection_age_grace: 1m
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      # Drop signals when memory is under pressure.
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 75
+        spike_limit_percentage: 20
+
+      # Stamp cluster-wide attributes.
+      resource:
+        attributes:
+          - key: k8s.cluster.name
+            value: ${env:CLUSTER_NAME}
+            action: upsert
+
+      # Probabilistic tail-sampling for traces — keep all errors and 10% of
+      # successful traces to control storage costs.
+      # Requires the tail_sampling processor (included in contrib image).
+      tail_sampling:
+        decision_wait: 30s
+        num_traces: 50000
+        expected_new_traces_per_sec: 1000
+        policies:
+          - name: keep-errors
+            type: status_code
+            status_code: { status_codes: [ERROR] }
+          - name: keep-slow-traces
+            type: latency
+            latency: { threshold_ms: 1000 }
+          - name: probabilistic-sample
+            type: probabilistic
+            probabilistic: { sampling_percentage: 10 }
+
+      # Batch before exporting to reduce connections to backends.
+      batch:
+        send_batch_size: 5000
+        send_batch_max_size: 10000
+        timeout: 10s
+
+    exporters:
+      # ── Traces → Jaeger (replace with your tracing backend) ────────────────
+      otlp/jaeger:
+        endpoint: jaeger-collector.observability.svc.cluster.local:4317
+        tls:
+          insecure: true
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 60s
+          max_elapsed_time: 300s
+        sending_queue:
+          enabled: true
+          num_consumers: 20
+          queue_size: 5000
+
+      # ── Metrics → Prometheus remote write ──────────────────────────────────
+      prometheusremotewrite:
+        endpoint: http://prometheus.monitoring.svc.cluster.local:9090/api/v1/write
+        tls:
+          insecure: true
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 60s
+          max_elapsed_time: 300s
+        resource_to_telemetry_conversion:
+          enabled: true
+
+      # ── Logs → Loki (replace with your log backend) ────────────────────────
+      loki:
+        endpoint: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+        tls:
+          insecure: true
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 60s
+          max_elapsed_time: 300s
+        sending_queue:
+          enabled: true
+          num_consumers: 20
+          queue_size: 5000
+
+      # ── Dead-letter: log unroutable signals at warn level ──────────────────
+      debug:
+        verbosity: basic
+        sampling_initial: 5
+        sampling_thereafter: 100
+
+    service:
+      extensions: [health_check, pprof]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, tail_sampling, batch]
+          exporters: [otlp/jaeger]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [prometheusremotewrite]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [loki]
+      telemetry:
+        metrics:
+          level: detailed
+          address: 0.0.0.0:8888
+        logs:
+          level: info
+          encoding: json
+          output_paths: [stdout]
+
+---
+# ── Deployment ─────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-gateway
+  namespace: otel-gateway
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/version: "0.115.0"
+    app.kubernetes.io/part-of: opentelemetry
+  annotations:
+    checksum/config: "managed-by-ci-pipeline"
+spec:
+  # HPA manages replica count above the minimum of 2.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-gateway
+      app.kubernetes.io/component: gateway
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0   # zero-downtime deploys
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: otel-gateway
+        app.kubernetes.io/component: gateway
+        app.kubernetes.io/version: "0.115.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8888"
+        prometheus.io/path: "/metrics"
+    spec:
+      # ── Identity ─────────────────────────────────────────────────────────────
+      serviceAccountName: otel-gateway
+      automountServiceAccountToken: false
+
+      # ── Scheduling ───────────────────────────────────────────────────────────
+      priorityClassName: system-cluster-critical
+      # Spread across zones and nodes to survive AZ failures.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: otel-gateway
+              app.kubernetes.io/component: gateway
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: otel-gateway
+              app.kubernetes.io/component: gateway
+      affinity:
+        podAntiAffinity:
+          # Hard rule: never co-locate two gateway pods on the same node.
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: otel-gateway
+                  app.kubernetes.io/component: gateway
+              topologyKey: kubernetes.io/hostname
+      tolerations:
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
+      nodeSelector:
+        kubernetes.io/os: linux
+
+      # ── Networking ───────────────────────────────────────────────────────────
+      hostNetwork: false
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "3"
+          - name: timeout
+            value: "2"
+          - name: attempts
+            value: "3"
+
+      # ── Pod-level security context ────────────────────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+
+      terminationGracePeriodSeconds: 60
+
+      # ── Init containers ──────────────────────────────────────────────────────
+      initContainers:
+        - name: config-check
+          image: otel/opentelemetry-collector-contrib:0.115.0
+          imagePullPolicy: IfNotPresent
+          command: ["/otelcol-contrib", "validate", "--config=/conf/config.yaml"]
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+              readOnly: true
+
+      # ── Containers ───────────────────────────────────────────────────────────
+      containers:
+        - name: otel-gateway
+          image: otel/opentelemetry-collector-contrib:0.115.0
+          imagePullPolicy: IfNotPresent
+          command: ["/otelcol-contrib", "--config=/conf/config.yaml"]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CLUSTER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: otel-gateway-config
+                  key: cluster_name
+                  optional: true
+            # Tune Go GC for a long-running memory-sensitive process.
+            - name: GOGC
+              value: "80"
+            - name: GOMEMLIMIT
+              value: "1750MiB"
+
+          # ── Ports ────────────────────────────────────────────────────────────
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+              protocol: TCP
+            - name: otlp-http
+              containerPort: 4318
+              protocol: TCP
+            - name: metrics
+              containerPort: 8888
+              protocol: TCP
+            - name: health
+              containerPort: 13133
+              protocol: TCP
+
+          # ── Security context ─────────────────────────────────────────────────
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: [ALL]
+
+          # ── Probes ───────────────────────────────────────────────────────────
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            # Allow up to 2 min for initial backend connectivity checks.
+            failureThreshold: 24
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            failureThreshold: 5
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 3
+
+          # ── Lifecycle ────────────────────────────────────────────────────────
+          lifecycle:
+            preStop:
+              exec:
+                # Allow in-flight batches to flush before SIGTERM.
+                command: ["/bin/sh", "-c", "sleep 10"]
+
+          # ── Resources ────────────────────────────────────────────────────────
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: FallbackToLogsOnError
+
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+
+      # ── Volumes ──────────────────────────────────────────────────────────────
+      volumes:
+        - name: config
+          configMap:
+            name: otel-gateway-config
+        - name: tmp
+          emptyDir: {}
+
+---
+# ── Service (ClusterIP — internal consumers and collectors) ───────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-gateway
+  namespace: otel-gateway
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: service
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8888"
+spec:
+  selector:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: gateway
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+      protocol: TCP
+    - name: metrics
+      port: 8888
+      targetPort: metrics
+      protocol: TCP
+    - name: health
+      port: 13133
+      targetPort: health
+      protocol: TCP
+  type: ClusterIP
+
+---
+# ── HorizontalPodAutoscaler ────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: otel-gateway
+  namespace: otel-gateway
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: otel-gateway
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+
+---
+# ── ServiceMonitor ─────────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: otel-gateway
+  namespace: otel-gateway
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: monitoring
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-gateway
+      app.kubernetes.io/component: service
+  namespaceSelector:
+    matchNames: [otel-gateway]
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      honorLabels: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+
+---
+# ── PrometheusRule ─────────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: otel-gateway
+  namespace: otel-gateway
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: alerting
+    release: prometheus
+spec:
+  groups:
+    - name: otel-gateway.health
+      interval: 60s
+      rules:
+        - alert: OtelGatewayDown
+          expr: absent(up{job="otel-gateway"} == 1)
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "OTel Gateway unreachable"
+            description: "No OTel Gateway pod has been reachable for > 2 minutes."
+
+        - alert: OtelGatewayNoReadyReplicas
+          expr: |
+            kube_deployment_status_replicas_ready{deployment="otel-gateway",namespace="otel-gateway"} < 1
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "OTel Gateway has no ready replicas"
+            description: "All OTel Gateway pods are unavailable. Telemetry pipeline is broken."
+
+        - alert: OtelGatewayBelowMinReplicas
+          expr: |
+            kube_deployment_status_replicas_ready{deployment="otel-gateway",namespace="otel-gateway"} < 2
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "OTel Gateway below minimum replicas"
+            description: "OTel Gateway has fewer than 2 ready replicas. HA is degraded."
+
+        - alert: OtelGatewayDroppedSpans
+          expr: |
+            rate(otelcol_processor_dropped_spans[5m]) > 500
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "OTel Gateway dropping spans"
+            description: "Gateway pod {{ $labels.pod }} is dropping > 500 spans/sec. Check backend exporters."
+
+        - alert: OtelGatewayExporterErrors
+          expr: |
+            rate(otelcol_exporter_send_failed_spans[5m]) > 10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "OTel Gateway exporter failures"
+            description: "Exporter on {{ $labels.pod }} is failing > 10 spans/sec. Check backend connectivity."
+
+        - alert: OtelGatewayHighMemory
+          expr: |
+            container_memory_working_set_bytes{
+              namespace="otel-gateway",
+              container="otel-gateway"
+            } / (2 * 1024 * 1024 * 1024) > 0.85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "OTel Gateway memory usage high"
+            description: "Gateway pod {{ $labels.pod }} is using > 85% of its 2 Gi memory limit."
+
+---
+# ── PodDisruptionBudget ────────────────────────────────────────────────────────
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: otel-gateway
+  namespace: otel-gateway
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: pdb
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-gateway
+      app.kubernetes.io/component: gateway
+  # Always keep at least one pod running during voluntary disruptions.
+  minAvailable: 1
+
+---
+# ── NetworkPolicy ──────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: otel-gateway
+  namespace: otel-gateway
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: netpol
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: otel-gateway
+      app.kubernetes.io/component: gateway
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # OTLP gRPC and HTTP from collectors and any application namespace
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - port: 4317
+          protocol: TCP
+        - port: 4318
+          protocol: TCP
+    # Prometheus scraping
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8888
+          protocol: TCP
+    # Health checks
+    - ports:
+        - port: 13133
+          protocol: TCP
+  egress:
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Backends: Jaeger, Prometheus remote write, Loki — all cluster-internal
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 4317
+          protocol: TCP    # Jaeger OTLP gRPC
+        - port: 9090
+          protocol: TCP    # Prometheus remote write
+        - port: 3100
+          protocol: TCP    # Loki push
+    # External backends over HTTPS (object storage, SaaS observability)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP
