@@ -7,9 +7,38 @@ metadata:
     app.kubernetes.io/part-of: security-stack
 data:
   values.yaml: |
+    # ══════════════════════════════════════════════════════════════════════════════
+    # IMAGES — update repository prefixes to match your private registry.
+    # All three images must be mirrored before deploying.
+    # ══════════════════════════════════════════════════════════════════════════════
+    imagePullPolicy: IfNotPresent
+
+    imagePullSecrets:
+      - name: private-registry-credentials
+
+    tetragon:
+      image:
+        repository: registry.example.com/cilium/tetragon
+        tag: v1.7.0
+
+    tetragonOperator:
+      image:
+        repository: registry.example.com/cilium/tetragon-operator
+        tag: v1.7.0
+        pullPolicy: IfNotPresent
+
+    export:
+      stdout:
+        image:
+          repository: registry.example.com/cilium/hubble-export-stdout
+          tag: v1.1.1
+
+    # ══════════════════════════════════════════════════════════════════════════════
+    # CONFIGURATION
+    # ══════════════════════════════════════════════════════════════════════════════
+
     # ── Scheduling ─────────────────────────────────────────────────────────────
     priorityClassName: system-node-critical
-    imagePullPolicy: IfNotPresent
 
     nodeSelector:
       kubernetes.io/os: linux
@@ -41,8 +70,6 @@ data:
         maxUnavailable: 1
 
     # ── Pod-level security context ──────────────────────────────────────────────
-    # Applies to the tetragon agent, export sidecar, and init containers.
-    # UID 65534 = nobody. runAsNonRoot is enforced at admission time.
     podSecurityContext:
       runAsNonRoot: true
       runAsUser: 65534
@@ -50,18 +77,10 @@ data:
       fsGroup: 65534
       fsGroupChangePolicy: OnRootMismatch
       seccompProfile:
-        # RuntimeDefault may block bpf(2) on Docker <= 20.
-        # Switch to Unconfined and document the exception if bpf() is blocked.
         type: RuntimeDefault
 
     # ── Tetragon agent ──────────────────────────────────────────────────────────
     tetragon:
-      image:
-        # Pin to a digest in production to prevent silent tag mutation:
-        #   crane digest quay.io/cilium/tetragon:v1.7.0
-        repository: quay.io/cilium/tetragon
-        tag: v1.7.0
-
       # The chart mounts /sys/fs/bpf with Bidirectional propagation, which
       # Kubernetes requires privileged: true for. Non-root is enforced at the
       # pod level via podSecurityContext.runAsUser: 65534 instead.
@@ -117,11 +136,6 @@ data:
       enabled: true
       replicas: 1
       priorityClassName: system-cluster-critical
-
-      image:
-        repository: quay.io/cilium/tetragon-operator
-        tag: v1.7.0
-        pullPolicy: IfNotPresent
 
       containerSecurityContext:
         runAsUser: 65532
