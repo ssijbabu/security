@@ -113,10 +113,7 @@ data:
         port: 2112
         metricsLabelFilter: "namespace,workload,pod,binary"
         serviceMonitor:
-          enabled: true
-          scrapeInterval: 30s
-          extraLabels:
-            release: prometheus
+          enabled: false
 
       grpc:
         enabled: true
@@ -167,10 +164,7 @@ data:
         enabled: true
         port: 2113
         serviceMonitor:
-          enabled: true
-          scrapeInterval: 30s
-          extraLabels:
-            release: prometheus
+          enabled: false
 
       tracingPolicy:
         enabled: true
