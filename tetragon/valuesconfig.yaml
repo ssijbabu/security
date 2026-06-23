@@ -69,23 +69,13 @@ data:
       rollingUpdate:
         maxUnavailable: 1
 
-    # ── Pod-level security context ──────────────────────────────────────────────
-    podSecurityContext:
-      runAsNonRoot: true
-      runAsUser: 65534
-      runAsGroup: 65534
-      fsGroup: 65534
-      fsGroupChangePolicy: OnRootMismatch
-      seccompProfile:
-        type: RuntimeDefault
-
     # ── Tetragon agent ──────────────────────────────────────────────────────────
     tetragon:
-      # The chart mounts /sys/fs/bpf with Bidirectional propagation, which
-      # Kubernetes requires privileged: true for. Non-root is enforced at the
-      # pod level via podSecurityContext.runAsUser: 65534 instead.
-      # See todo: harden agent securityContext once Tetragon supports
-      # non-privileged mode upstream.
+      # The Tetragon agent requires UID 0:
+      #   - Bidirectional BPF mount propagation requires privileged: true
+      #   - The gRPC server writes to /.config (root-owned path)
+      # podSecurityContext.runAsUser is therefore not overridden.
+      # See todo: harden once Tetragon supports non-privileged mode upstream.
 
       resources:
         requests:
