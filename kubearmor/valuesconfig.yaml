@@ -60,6 +60,12 @@ data:
           cpu: 500m
           memory: 128Mi
 
+    kubeRbacProxy:
+      image:
+        repository: registry.example.com/kubearmor/kube-rbac-proxy
+        tag: v0.5.0
+      imagePullPolicy: IfNotPresent
+
     # ══════════════════════════════════════════════════════════════════════════════
     # CONFIGURATION
     # ══════════════════════════════════════════════════════════════════════════════
