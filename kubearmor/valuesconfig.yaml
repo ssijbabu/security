@@ -11,82 +11,71 @@ data:
     # IMAGES — update repository prefixes to match your private registry.
     # Five images must be mirrored: kubearmor, kubearmor-init, relay-server,
     # controller, and kube-rbac-proxy.
+    # Chart key for pull policy is <component>.imagePullPolicy (not image.pullPolicy).
+    # Chart key for pull secret is <component>.image.imagePullSecrets (list).
     # ══════════════════════════════════════════════════════════════════════════════
-    imagePullPolicy: IfNotPresent
-
-    imagePullSecrets:
-      - name: private-registry-credentials
-
     kubearmor:
       image:
         repository: registry.example.com/kubearmor/kubearmor
         tag: v1.7.3
-        pullPolicy: IfNotPresent
+        imagePullSecrets:
+          - name: private-registry-credentials
+      imagePullPolicy: IfNotPresent
 
     kubearmorInit:
       image:
         repository: registry.example.com/kubearmor/kubearmor-init
         tag: v1.7.3
-        pullPolicy: IfNotPresent
+        imagePullSecrets:
+          - name: private-registry-credentials
+      imagePullPolicy: IfNotPresent
 
     kubearmorRelay:
       image:
         repository: registry.example.com/kubearmor/kubearmor-relay-server
         tag: v1.7.3
-        pullPolicy: IfNotPresent
+        imagePullSecrets:
+          - name: private-registry-credentials
+      imagePullPolicy: IfNotPresent
 
     kubearmorController:
       image:
         repository: registry.example.com/kubearmor/kubearmor-controller
         tag: v1.7.3
-        pullPolicy: IfNotPresent
+        imagePullSecrets:
+          - name: private-registry-credentials
+      imagePullPolicy: IfNotPresent
 
     kubeRbacProxy:
       image:
         repository: registry.example.com/brancz/kube-rbac-proxy
         tag: v0.18.1
-        pullPolicy: IfNotPresent
+        imagePullSecrets:
+          - name: private-registry-credentials
+      imagePullPolicy: IfNotPresent
 
     # ══════════════════════════════════════════════════════════════════════════════
     # CONFIGURATION
     # ══════════════════════════════════════════════════════════════════════════════
 
+    # ── Default security posture ─────────────────────────────────────────────────
+    # Controls what happens to workloads with no explicit KubeArmorPolicy.
+    # "audit"  — log violations without blocking (safe for initial rollout)
+    # "block"  — enforce and block (production target)
+    kubearmorConfigMap:
+      defaultFilePosture: block
+      defaultCapabilitiesPosture: block
+      defaultNetworkPosture: block
+      alertThrottling: true
+      maxAlertPerSec: 10
+      throttleSec: 30
+
     # ── KubeArmor agent (DaemonSet) ─────────────────────────────────────────────
+    # NOTE: kubearmor.tolerations is intentionally omitted.
+    # The chart template renders tolerations with broken indentation (indent 4
+    # while the parent key is at 6 spaces), producing invalid YAML for any
+    # multi-item list. Leave empty to use the chart default (no extra tolerations).
     kubearmor:
-      # The KubeArmor agent requires UID 0 and privileged mode to:
-      #   - Load BPF programs and LSM hooks (AppArmor / SELinux / BPF-LSM)
-      #   - Mount /sys/kernel/security and /sys/fs/bpf
-      #   - Write enforcement policy into the running kernel
-      # runAsNonRoot cannot be set here without breaking LSM enforcement.
-
-      priorityClassName: system-node-critical
-
-      tolerations:
-        - operator: Exists
-          effect: NoSchedule
-        - operator: Exists
-          effect: NoExecute
-        - key: node.kubernetes.io/not-ready
-          operator: Exists
-          effect: NoExecute
-        - key: node.kubernetes.io/unreachable
-          operator: Exists
-          effect: NoExecute
-        - key: node.kubernetes.io/disk-pressure
-          operator: Exists
-          effect: NoSchedule
-        - key: node.kubernetes.io/memory-pressure
-          operator: Exists
-          effect: NoSchedule
-        - key: node.kubernetes.io/pid-pressure
-          operator: Exists
-          effect: NoSchedule
-
-      updateStrategy:
-        type: RollingUpdate
-        rollingUpdate:
-          maxUnavailable: 1
-
       resources:
         requests:
           cpu: 100m
@@ -95,37 +84,9 @@ data:
           cpu: 500m
           memory: 512Mi
 
-      # Enforce default posture: block undeclared actions (allowlist model).
-      # Set to "audit" during initial rollout to observe without blocking.
-      defaultFilePosture: block
-      defaultNetworkPosture: block
-      defaultCapabilitiesPosture: block
-
-      alertThrottling: true
-      maxAlertPerSec: 10
-      throttleSec: 30
-
     # ── Relay server (Deployment) ────────────────────────────────────────────────
-    # Relay aggregates telemetry from all agent DaemonSet pods.
-    # Runs as non-root — no kernel access required.
     kubearmorRelay:
       enabled: true
-      replicas: 1
-
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65534
-        runAsGroup: 65534
-        fsGroup: 65534
-        seccompProfile:
-          type: RuntimeDefault
-
-      containerSecurityContext:
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        capabilities:
-          drop: [ALL]
-
       resources:
         requests:
           cpu: 50m
@@ -134,31 +95,10 @@ data:
           cpu: 500m
           memory: 256Mi
 
-      podDisruptionBudget:
-        enabled: true
-        minAvailable: 1
-
     # ── Controller (Deployment) ──────────────────────────────────────────────────
-    # KubeArmor controller watches KubeArmorPolicy CRs and reconciles them.
-    # Runs as non-root — uses the kube-apiserver, not the kernel directly.
     kubearmorController:
       enabled: true
       replicas: 1
-
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        runAsGroup: 65532
-        fsGroup: 65532
-        seccompProfile:
-          type: RuntimeDefault
-
-      containerSecurityContext:
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        capabilities:
-          drop: [ALL]
-
       resources:
         requests:
           cpu: 10m
@@ -166,13 +106,3 @@ data:
         limits:
           cpu: 500m
           memory: 128Mi
-
-      strategy:
-        type: RollingUpdate
-        rollingUpdate:
-          maxSurge: 1
-          maxUnavailable: 0
-
-      podDisruptionBudget:
-        enabled: true
-        minAvailable: 1
