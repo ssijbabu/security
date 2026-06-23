@@ -1,0 +1,278 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: tetragon
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/part-of: security-stack
+spec:
+  # ── Chart source ─────────────────────────────────────────────────────────────
+  chart:
+    spec:
+      chart: tetragon
+      # Pin to an exact version. Bump this field to trigger an upgrade.
+      version: "1.7.0"
+      sourceRef:
+        kind: HelmRepository
+        name: cilium
+        namespace: flux-system
+      # How often to check whether a new chart version matching the constraint
+      # is available. Irrelevant for exact-version pins but required by the spec.
+      interval: 12h
+
+  # How often the helm-controller reconciles this release (idempotent apply).
+  interval: 1h
+
+  # Deploy into the tetragon namespace; create it if it does not exist.
+  releaseName: tetragon
+  targetNamespace: tetragon
+  storageNamespace: tetragon
+
+  # Keep the last 5 Helm release secrets for rollback.
+  maxHistory: 5
+
+  # Allow enough time for eBPF program loading on DaemonSet pods (can be
+  # slow on first install on nodes with cold BPF caches).
+  timeout: 10m
+
+  # ── CRD policy ───────────────────────────────────────────────────────────────
+  install:
+    createNamespace: true
+    # CreateReplace keeps TracingPolicy / PodInfo CRDs in sync on upgrade.
+    # Switch to Skip if you manage CRDs separately (e.g. via a dedicated
+    # Kustomization that runs before this release).
+    crds: CreateReplace
+    remediation:
+      retries: 3
+
+  upgrade:
+    crds: CreateReplace
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+      # Roll back to the last-known-good release after the final failed retry.
+      remediateLastFailure: true
+
+  rollback:
+    timeout: 10m
+    cleanupOnFail: true
+    recreate: false
+
+  # ── Drift detection ───────────────────────────────────────────────────────────
+  # Detect and correct out-of-band changes to cluster resources.
+  driftDetection:
+    mode: enabled
+    ignore:
+      # status subresources are managed by controllers, not Helm.
+      - paths: ["/status"]
+        target:
+          group: apps
+          kind: DaemonSet
+      - paths: ["/status"]
+        target:
+          group: apps
+          kind: Deployment
+
+  # ── Values ───────────────────────────────────────────────────────────────────
+  values:
+    # ── Scheduling ─────────────────────────────────────────────────────────────
+    priorityClassName: system-node-critical
+    imagePullPolicy: IfNotPresent
+
+    nodeSelector:
+      kubernetes.io/os: linux
+
+    tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      - operator: Exists
+        effect: NoExecute
+      - key: node.kubernetes.io/not-ready
+        operator: Exists
+        effect: NoExecute
+      - key: node.kubernetes.io/unreachable
+        operator: Exists
+        effect: NoExecute
+      - key: node.kubernetes.io/disk-pressure
+        operator: Exists
+        effect: NoSchedule
+      - key: node.kubernetes.io/memory-pressure
+        operator: Exists
+        effect: NoSchedule
+      - key: node.kubernetes.io/pid-pressure
+        operator: Exists
+        effect: NoSchedule
+
+    updateStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 1
+
+    # ── Pod-level security context ──────────────────────────────────────────────
+    # Applies to the tetragon agent, export sidecar, and init containers.
+    # UID 65534 = nobody. runAsNonRoot is enforced at admission time.
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      runAsGroup: 65534
+      fsGroup: 65534
+      fsGroupChangePolicy: OnRootMismatch
+      seccompProfile:
+        # RuntimeDefault may block bpf(2) on Docker <= 20.
+        # Switch to Unconfined and document the exception if bpf() is blocked.
+        type: RuntimeDefault
+
+    # ── Tetragon agent ──────────────────────────────────────────────────────────
+    tetragon:
+      image:
+        # Pin to a digest in production to prevent silent tag mutation:
+        #   crane digest quay.io/cilium/tetragon:v1.7.0
+        repository: quay.io/cilium/tetragon
+        tag: v1.7.0
+
+      # Replace the upstream default (privileged: true) with an explicit
+      # capability set so the container never runs as UID 0.
+      securityContext:
+        privileged: false
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        seccompProfile:
+          type: RuntimeDefault
+        capabilities:
+          drop: [ALL]
+          add:
+            - BPF            # load/pin/manage eBPF programs and maps
+            - PERFMON        # attach perf_event sources used by eBPF
+            - SYS_RESOURCE   # raise RLIMIT_MEMLOCK for BPF map memory
+            - NET_ADMIN      # attach TC/XDP eBPF programs
+            - SYS_PTRACE     # read /proc/<pid>/status for credential enrichment
+            - DAC_READ_SEARCH  # read /proc entries owned by other UIDs when non-root
+
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 1Gi
+
+      # Process visibility
+      enableProcessCred: true
+      enableProcessNs: true
+      enableK8sAPI: true
+      enablePolicyFilter: true
+
+      # Export / log rotation
+      exportFilePerm: "600"
+      exportFileMaxSizeMB: 100
+      exportFileMaxBackups: 5
+      exportFileCompress: true
+
+      # Redact common secret patterns from process args.
+      redactionFilters: |
+        {"redact": ["--password(?:\\s+|=)(\\S*)", "-p(?:\\s+|=)(\\S*)", "(?i)token[=:](\\S*)"]}
+
+      # Drop health-check and system namespace noise from exports.
+      exportDenyList: |
+        {"health_check":true}
+        {"namespace":["", "cilium", "kube-system"]}
+
+      # Set to your cluster name so events carry k8s.cluster.name.
+      clusterName: ""
+
+      prometheus:
+        enabled: true
+        address: ""
+        port: 2112
+        metricsLabelFilter: "namespace,workload,pod,binary"
+        serviceMonitor:
+          enabled: true
+          scrapeInterval: 30s
+          # Must match your Prometheus CR's serviceMonitorSelector.
+          extraLabels:
+            release: prometheus
+
+      grpc:
+        enabled: true
+        address: "localhost:54321"
+
+      healthGrpc:
+        enabled: true
+        port: 6789
+        interval: 10
+
+    # ── Tetragon Operator ───────────────────────────────────────────────────────
+    tetragonOperator:
+      enabled: true
+      replicas: 1
+      priorityClassName: system-cluster-critical
+
+      image:
+        repository: quay.io/cilium/tetragon-operator
+        tag: v1.7.0
+        pullPolicy: IfNotPresent
+
+      # The upstream default (runAsUser: 65532) is already non-root.
+      # Add seccompProfile and readOnlyRootFilesystem on top.
+      containerSecurityContext:
+        runAsUser: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        seccompProfile:
+          type: RuntimeDefault
+        capabilities:
+          drop: [ALL]
+
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 128Mi
+
+      strategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxSurge: 1
+          maxUnavailable: 0
+
+      prometheus:
+        enabled: true
+        port: 2113
+        serviceMonitor:
+          enabled: true
+          scrapeInterval: 30s
+          extraLabels:
+            release: prometheus
+
+      tracingPolicy:
+        enabled: true
+
+    # ── Export sidecar ──────────────────────────────────────────────────────────
+    export:
+      mode: "stdout"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        seccompProfile:
+          type: RuntimeDefault
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+    # ── CRDs ────────────────────────────────────────────────────────────────────
+    crds:
+      # "operator" lets the Tetragon Operator manage CRD lifecycle.
+      installMethod: "operator"
