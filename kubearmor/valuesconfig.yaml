@@ -60,12 +60,6 @@ data:
           cpu: 500m
           memory: 128Mi
 
-    kubeRbacProxy:
-      image:
-        repository: registry.example.com/brancz/kube-rbac-proxy
-        tag: v0.18.1
-      imagePullPolicy: IfNotPresent
-
     # ══════════════════════════════════════════════════════════════════════════════
     # CONFIGURATION
     # ══════════════════════════════════════════════════════════════════════════════
