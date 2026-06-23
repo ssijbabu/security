@@ -1,0 +1,201 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tetragon-values
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/part-of: security-stack
+data:
+  values.yaml: |
+    # ── Scheduling ─────────────────────────────────────────────────────────────
+    priorityClassName: system-node-critical
+    imagePullPolicy: IfNotPresent
+
+    nodeSelector:
+      kubernetes.io/os: linux
+
+    tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      - operator: Exists
+        effect: NoExecute
+      - key: node.kubernetes.io/not-ready
+        operator: Exists
+        effect: NoExecute
+      - key: node.kubernetes.io/unreachable
+        operator: Exists
+        effect: NoExecute
+      - key: node.kubernetes.io/disk-pressure
+        operator: Exists
+        effect: NoSchedule
+      - key: node.kubernetes.io/memory-pressure
+        operator: Exists
+        effect: NoSchedule
+      - key: node.kubernetes.io/pid-pressure
+        operator: Exists
+        effect: NoSchedule
+
+    updateStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 1
+
+    # ── Pod-level security context ──────────────────────────────────────────────
+    # Applies to the tetragon agent, export sidecar, and init containers.
+    # UID 65534 = nobody. runAsNonRoot is enforced at admission time.
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      runAsGroup: 65534
+      fsGroup: 65534
+      fsGroupChangePolicy: OnRootMismatch
+      seccompProfile:
+        # RuntimeDefault may block bpf(2) on Docker <= 20.
+        # Switch to Unconfined and document the exception if bpf() is blocked.
+        type: RuntimeDefault
+
+    # ── Tetragon agent ──────────────────────────────────────────────────────────
+    tetragon:
+      image:
+        # Pin to a digest in production to prevent silent tag mutation:
+        #   crane digest quay.io/cilium/tetragon:v1.7.0
+        repository: quay.io/cilium/tetragon
+        tag: v1.7.0
+
+      # Replace the upstream default (privileged: true) with an explicit
+      # capability set so the container never runs as UID 0.
+      securityContext:
+        privileged: false
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        seccompProfile:
+          type: RuntimeDefault
+        capabilities:
+          drop: [ALL]
+          add:
+            - BPF
+            - PERFMON
+            - SYS_RESOURCE
+            - NET_ADMIN
+            - SYS_PTRACE
+            - DAC_READ_SEARCH
+
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 1Gi
+
+      enableProcessCred: true
+      enableProcessNs: true
+      enableK8sAPI: true
+      enablePolicyFilter: true
+
+      exportFilePerm: "600"
+      exportFileMaxSizeMB: 100
+      exportFileMaxBackups: 5
+      exportFileCompress: true
+
+      redactionFilters: |
+        {"redact": ["--password(?:\\s+|=)(\\S*)", "-p(?:\\s+|=)(\\S*)", "(?i)token[=:](\\S*)"]}
+
+      exportDenyList: |
+        {"health_check":true}
+        {"namespace":["", "cilium", "kube-system"]}
+
+      clusterName: ""
+
+      prometheus:
+        enabled: true
+        address: ""
+        port: 2112
+        metricsLabelFilter: "namespace,workload,pod,binary"
+        serviceMonitor:
+          enabled: true
+          scrapeInterval: 30s
+          extraLabels:
+            release: prometheus
+
+      grpc:
+        enabled: true
+        address: "localhost:54321"
+
+      healthGrpc:
+        enabled: true
+        port: 6789
+        interval: 10
+
+    # ── Tetragon Operator ───────────────────────────────────────────────────────
+    tetragonOperator:
+      enabled: true
+      replicas: 1
+      priorityClassName: system-cluster-critical
+
+      image:
+        repository: quay.io/cilium/tetragon-operator
+        tag: v1.7.0
+        pullPolicy: IfNotPresent
+
+      containerSecurityContext:
+        runAsUser: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        seccompProfile:
+          type: RuntimeDefault
+        capabilities:
+          drop: [ALL]
+
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 128Mi
+
+      strategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxSurge: 1
+          maxUnavailable: 0
+
+      prometheus:
+        enabled: true
+        port: 2113
+        serviceMonitor:
+          enabled: true
+          scrapeInterval: 30s
+          extraLabels:
+            release: prometheus
+
+      tracingPolicy:
+        enabled: true
+
+    # ── Export sidecar ──────────────────────────────────────────────────────────
+    export:
+      mode: "stdout"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        seccompProfile:
+          type: RuntimeDefault
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+    # ── CRDs ────────────────────────────────────────────────────────────────────
+    crds:
+      installMethod: "operator"
