@@ -74,8 +74,6 @@ spec:
           kind: Deployment
 
   # ── Values ───────────────────────────────────────────────────────────────────
-  # Values are maintained in valuesconfig.yaml (ConfigMap tetragon-values).
-  # Use spec.values here only for runtime overrides (e.g. clusterName).
   valuesFrom:
     - kind: ConfigMap
       name: tetragon-values
