@@ -62,23 +62,11 @@ data:
         repository: quay.io/cilium/tetragon
         tag: v1.7.0
 
-      # Replace the upstream default (privileged: true) with an explicit
-      # capability set so the container never runs as UID 0.
-      securityContext:
-        privileged: false
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        seccompProfile:
-          type: RuntimeDefault
-        capabilities:
-          drop: [ALL]
-          add:
-            - BPF
-            - PERFMON
-            - SYS_RESOURCE
-            - NET_ADMIN
-            - SYS_PTRACE
-            - DAC_READ_SEARCH
+      # The chart mounts /sys/fs/bpf with Bidirectional propagation, which
+      # Kubernetes requires privileged: true for. Non-root is enforced at the
+      # pod level via podSecurityContext.runAsUser: 65534 instead.
+      # See todo: harden agent securityContext once Tetragon supports
+      # non-privileged mode upstream.
 
       resources:
         requests:
@@ -172,16 +160,8 @@ data:
     # ── Export sidecar ──────────────────────────────────────────────────────────
     export:
       mode: "stdout"
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65534
-        runAsGroup: 65534
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        seccompProfile:
-          type: RuntimeDefault
-        capabilities:
-          drop: [ALL]
+      # securityContext not overridden — export sidecar also mounts with
+      # Bidirectional propagation and requires privileged: true (chart default).
       resources:
         requests:
           cpu: 10m
