@@ -11,71 +11,12 @@ data:
     # IMAGES — update repository prefixes to match your private registry.
     # Five images must be mirrored: kubearmor, kubearmor-init, relay-server,
     # controller, and kube-rbac-proxy.
-    # Chart key for pull policy is <component>.imagePullPolicy (not image.pullPolicy).
-    # Chart key for pull secret is <component>.image.imagePullSecrets (list).
     # ══════════════════════════════════════════════════════════════════════════════
     kubearmor:
       image:
         repository: registry.example.com/kubearmor/kubearmor
         tag: v1.7.3
-        imagePullSecrets:
-          - name: private-registry-credentials
       imagePullPolicy: IfNotPresent
-
-    kubearmorInit:
-      image:
-        repository: registry.example.com/kubearmor/kubearmor-init
-        tag: v1.7.3
-        imagePullSecrets:
-          - name: private-registry-credentials
-      imagePullPolicy: IfNotPresent
-
-    kubearmorRelay:
-      image:
-        repository: registry.example.com/kubearmor/kubearmor-relay-server
-        tag: v1.7.3
-        imagePullSecrets:
-          - name: private-registry-credentials
-      imagePullPolicy: IfNotPresent
-
-    kubearmorController:
-      image:
-        repository: registry.example.com/kubearmor/kubearmor-controller
-        tag: v1.7.3
-        imagePullSecrets:
-          - name: private-registry-credentials
-      imagePullPolicy: IfNotPresent
-
-    kubeRbacProxy:
-      image:
-        repository: registry.example.com/brancz/kube-rbac-proxy
-        tag: v0.18.1
-        imagePullSecrets:
-          - name: private-registry-credentials
-      imagePullPolicy: IfNotPresent
-
-    # ══════════════════════════════════════════════════════════════════════════════
-    # CONFIGURATION
-    # ══════════════════════════════════════════════════════════════════════════════
-
-    # ── Default security posture ─────────────────────────────────────────────────
-    # Controls what happens to workloads with no explicit KubeArmorPolicy.
-    # "audit"  — log violations without blocking (safe for initial rollout)
-    # "block"  — enforce and block (production target)
-    kubearmorConfigMap:
-      defaultFilePosture: block
-      defaultCapabilitiesPosture: block
-      defaultNetworkPosture: block
-      alertThrottling: true
-      maxAlertPerSec: 10
-      throttleSec: 30
-
-    # ── KubeArmor agent (DaemonSet) ─────────────────────────────────────────────
-    # NOTE: kubearmor.tolerations is intentionally omitted.
-    # The chart template renders tolerations with broken indentation (indent 4
-    # while the parent key is at 6 spaces), producing invalid YAML for any
-    # multi-item list. Leave empty to use the chart default (no extra tolerations).
-    kubearmor:
       resources:
         requests:
           cpu: 100m
@@ -84,9 +25,18 @@ data:
           cpu: 500m
           memory: 512Mi
 
-    # ── Relay server (Deployment) ────────────────────────────────────────────────
+    kubearmorInit:
+      image:
+        repository: registry.example.com/kubearmor/kubearmor-init
+        tag: v1.7.3
+      imagePullPolicy: IfNotPresent
+
     kubearmorRelay:
       enabled: true
+      image:
+        repository: registry.example.com/kubearmor/kubearmor-relay-server
+        tag: v1.7.3
+      imagePullPolicy: IfNotPresent
       resources:
         requests:
           cpu: 50m
@@ -95,10 +45,13 @@ data:
           cpu: 500m
           memory: 256Mi
 
-    # ── Controller (Deployment) ──────────────────────────────────────────────────
     kubearmorController:
       enabled: true
       replicas: 1
+      image:
+        repository: registry.example.com/kubearmor/kubearmor-controller
+        tag: v1.7.3
+      imagePullPolicy: IfNotPresent
       resources:
         requests:
           cpu: 10m
@@ -106,3 +59,26 @@ data:
         limits:
           cpu: 500m
           memory: 128Mi
+
+    kubeRbacProxy:
+      image:
+        repository: registry.example.com/brancz/kube-rbac-proxy
+        tag: v0.18.1
+      imagePullPolicy: IfNotPresent
+
+    # ══════════════════════════════════════════════════════════════════════════════
+    # CONFIGURATION
+    # ══════════════════════════════════════════════════════════════════════════════
+
+    # NOTE: kubearmor.tolerations is intentionally omitted.
+    # The chart template renders tolerations with broken indentation (indent 4
+    # while the parent key is at 6 spaces), producing invalid YAML for any
+    # multi-item list.
+
+    kubearmorConfigMap:
+      defaultFilePosture: block
+      defaultCapabilitiesPosture: block
+      defaultNetworkPosture: block
+      alertThrottling: true
+      maxAlertPerSec: 10
+      throttleSec: 30
