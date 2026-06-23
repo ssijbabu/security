@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tetragon.fullname" . }}
+  namespace: {{ include "tetragon.namespace" . }}
+  labels:
+    {{- include "tetragon.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml .Values.service.annotations | nindent 4 }}
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    {{- include "tetragon.selectorLabels" . | nindent 4 }}
+  clusterIP: {{ .Values.service.clusterIP }}
+  ports:
+    - name: metrics
+      port: {{ .Values.service.ports.metrics }}
+      targetPort: metrics
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.service.ports.grpc }}
+      targetPort: grpc
+      protocol: TCP

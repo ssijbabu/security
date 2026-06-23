@@ -1,0 +1,28 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "tetragon.fullname" . }}
+  labels:
+    {{- include "tetragon.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+rules:
+  # Core API — read-only pod/node/namespace metadata for event enrichment
+  - apiGroups: [""]
+    resources: [pods, services, nodes, namespaces]
+    verbs: [get, list, watch]
+  # Tetragon tracing policy CRDs
+  - apiGroups: [cilium.io]
+    resources:
+      - tracingpolicies
+      - tracingpoliciesnamespaced
+      - podinfo
+    verbs: [get, list, watch]
+  # Token creation for API server authentication
+  - apiGroups: [""]
+    resources: [serviceaccounts/token]
+    verbs: [create]
+{{- end }}

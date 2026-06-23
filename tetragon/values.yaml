@@ -1,0 +1,256 @@
+# ── Image ──────────────────────────────────────────────────────────────────────
+image:
+  repository: quay.io/cilium/tetragon
+  # tag defaults to .Chart.AppVersion when empty
+  tag: ""
+  # Set to pin by digest and ignore tag:
+  #   digest: sha256:<value>  (obtain via: crane digest quay.io/cilium/tetragon:v1.4.0)
+  digest: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# ── Namespace ──────────────────────────────────────────────────────────────────
+# Override the namespace that all resources are created in.
+# Defaults to the Helm release namespace.
+namespaceOverride: ""
+# Set to true to have the chart create the Namespace resource.
+createNamespace: true
+
+# ── Extra labels / annotations applied to every resource ──────────────────────
+commonLabels: {}
+commonAnnotations: {}
+
+# ── DaemonSet update strategy ─────────────────────────────────────────────────
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+
+# ── Scheduling ─────────────────────────────────────────────────────────────────
+priorityClassName: system-node-critical
+
+nodeSelector:
+  kubernetes.io/os: linux
+
+tolerations:
+  - operator: Exists
+    effect: NoSchedule
+  - operator: Exists
+    effect: NoExecute
+  - key: node.kubernetes.io/not-ready
+    operator: Exists
+    effect: NoExecute
+  - key: node.kubernetes.io/unreachable
+    operator: Exists
+    effect: NoExecute
+  - key: node.kubernetes.io/disk-pressure
+    operator: Exists
+    effect: NoSchedule
+  - key: node.kubernetes.io/memory-pressure
+    operator: Exists
+    effect: NoSchedule
+  - key: node.kubernetes.io/pid-pressure
+    operator: Exists
+    effect: NoSchedule
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "2112"
+  prometheus.io/path: "/metrics"
+
+podLabels: {}
+
+# ── Termination ────────────────────────────────────────────────────────────────
+terminationGracePeriodSeconds: 60
+
+# ── Pod-level security context ─────────────────────────────────────────────────
+# runAsUser 65534 = nobody. runAsNonRoot blocks UID 0 at admission time.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+# ── Container-level security context ──────────────────────────────────────────
+# capabilities.drop: [ALL] first, then only the minimum required for eBPF.
+# RuntimeDefault seccomp may block bpf(2) on Docker <= 20; switch to
+# Unconfined if needed and document the exception.
+securityContext:
+  runAsUser: 65534
+  runAsGroup: 65534
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+  capabilities:
+    drop: [ALL]
+    add:
+      - BPF           # load/pin/manage eBPF programs and maps
+      - PERFMON       # attach perf_event sources used by eBPF
+      - SYS_RESOURCE  # raise RLIMIT_MEMLOCK for BPF map memory
+      - NET_ADMIN     # attach TC/XDP eBPF programs
+      - SYS_PTRACE    # read /proc/<pid>/status for credential enrichment
+
+# ── Init container security context ───────────────────────────────────────────
+initSecurityContext:
+  runAsUser: 65534
+  runAsGroup: 65534
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+  capabilities:
+    drop: [ALL]
+    add:
+      - SYS_ADMIN   # required for mount(2) of bpffs
+
+# ── Resources ──────────────────────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+initResources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 50m
+    memory: 64Mi
+
+# ── Probes ─────────────────────────────────────────────────────────────────────
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: 6789
+  # Allow up to 3 min for eBPF program loading on first start.
+  failureThreshold: 18
+  periodSeconds: 10
+  timeoutSeconds: 3
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 6789
+  initialDelaySeconds: 5
+  periodSeconds: 30
+  failureThreshold: 5
+  timeoutSeconds: 5
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: 6789
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+  timeoutSeconds: 3
+
+# ── Tetragon configuration ─────────────────────────────────────────────────────
+# Keys map 1:1 to Tetragon's --config-dir flag keys (kebab-case).
+config:
+  export-filename: /var/run/cilium/tetragon/tetragon.log
+  export-file-max-size-mb: "100"
+  export-file-rotation-interval: 24h
+  export-file-compress: "true"
+  enable-process-cred: "true"
+  enable-process-ns: "true"
+  metrics-server: ":2112"
+  server-address: "localhost:54321"
+  log-level: info
+  log-format: json
+
+# ── Service ────────────────────────────────────────────────────────────────────
+service:
+  # Headless so Prometheus can scrape each pod IP individually.
+  clusterIP: None
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "2112"
+  ports:
+    metrics: 2112
+    grpc: 54321
+
+# ── ServiceAccount ─────────────────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  # Specify a name to use an existing SA instead of creating one.
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+# ── RBAC ───────────────────────────────────────────────────────────────────────
+rbac:
+  create: true
+
+# ── ServiceMonitor (Prometheus Operator) ──────────────────────────────────────
+serviceMonitor:
+  enabled: true
+  # Must match your Prometheus CR's serviceMonitorSelector labels.
+  labels:
+    release: prometheus
+  interval: 30s
+  scrapeTimeout: 10s
+  honorLabels: true
+
+# ── PrometheusRule ─────────────────────────────────────────────────────────────
+prometheusRule:
+  enabled: true
+  labels:
+    release: prometheus
+  # Append extra rules to the default set.
+  additionalRules: []
+
+# ── PodDisruptionBudget ────────────────────────────────────────────────────────
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# ── NetworkPolicy ──────────────────────────────────────────────────────────────
+networkPolicy:
+  enabled: true
+  # Namespace label value for Prometheus ingress allow.
+  monitoringNamespace: monitoring
+  # Additional ingress rules appended to the default set.
+  additionalIngress: []
+  # Additional egress rules appended to the default set.
+  additionalEgress: []
+
+# ── ResourceQuota ──────────────────────────────────────────────────────────────
+resourceQuota:
+  enabled: true
+  hard:
+    requests.cpu: "4"
+    requests.memory: 4Gi
+    limits.cpu: "8"
+    limits.memory: 8Gi
+    pods: "110"
+    services: "5"
+    configmaps: "10"
+    persistentvolumeclaims: "0"
+
+# ── LimitRange ─────────────────────────────────────────────────────────────────
+limitRange:
+  enabled: true
+  limits:
+    - type: Container
+      default:
+        cpu: 500m
+        memory: 512Mi
+      defaultRequest:
+        cpu: 100m
+        memory: 256Mi
+      max:
+        cpu: "2"
+        memory: 2Gi
+      min:
+        cpu: 50m
+        memory: 64Mi

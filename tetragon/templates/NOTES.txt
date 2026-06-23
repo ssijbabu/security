@@ -1,0 +1,31 @@
+Tetragon {{ .Chart.AppVersion }} has been deployed.
+
+DaemonSet: {{ include "tetragon.fullname" . }}
+Namespace:  {{ include "tetragon.namespace" . }}
+
+Wait for the rollout to complete:
+  kubectl rollout status daemonset/{{ include "tetragon.fullname" . }} \
+    -n {{ include "tetragon.namespace" . }}
+
+Verify all pods are running:
+  kubectl get pods -n {{ include "tetragon.namespace" . }} \
+    -l "{{ include "tetragon.selectorLabels" . | replace "\n" "," }}"
+
+Tail security events from any node:
+  kubectl exec -n {{ include "tetragon.namespace" . }} \
+    -it daemonset/{{ include "tetragon.fullname" . }} \
+    -- tetra getevents -o compact
+
+{{- if .Values.serviceMonitor.enabled }}
+
+Prometheus ServiceMonitor is enabled.
+Ensure your Prometheus CR's serviceMonitorSelector matches:
+  {{ .Values.serviceMonitor.labels | toYaml | nindent 2 | trim }}
+{{- end }}
+
+{{- if .Values.networkPolicy.enabled }}
+
+NetworkPolicy is enabled. If pods cannot reach the Kubernetes API server,
+verify that the kube-system namespace has the label:
+  kubernetes.io/metadata.name: kube-system
+{{- end }}
