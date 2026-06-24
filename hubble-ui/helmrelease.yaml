@@ -18,9 +18,9 @@ spec:
         kind: HelmRepository
         name: management-helm-repo
         namespace: flux-system
-      interval: 12h
+      interval: 15m
 
-  interval: 1h
+  interval: 15m
   releaseName: hubble-ui
   targetNamespace: kube-system
   storageNamespace: kube-system

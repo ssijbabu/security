@@ -18,10 +18,10 @@ spec:
         namespace: flux-system
       # How often to check whether a new chart version matching the constraint
       # is available. Irrelevant for exact-version pins but required by the spec.
-      interval: 12h
+      interval: 15m
 
   # How often the helm-controller reconciles this release (idempotent apply).
-  interval: 1h
+  interval: 15m
 
   # Deploy into the tetragon namespace; create it if it does not exist.
   releaseName: tetragon
