@@ -9,85 +9,42 @@ data:
   values.yaml: |
     # ══════════════════════════════════════════════════════════════════════════════
     # IMAGES — update repository prefixes to match your private registry.
-    # Three images must be mirrored: hubble-relay, hubble-ui-backend, hubble-ui.
+    # Two images must be mirrored: hubble-ui (frontend) and hubble-ui-backend.
     # ══════════════════════════════════════════════════════════════════════════════
-    imagePullPolicy: IfNotPresent
-
-    imagePullSecrets:
-      - name: private-registry-credentials
-
-    hubble:
-      relay:
-        image:
-          repository: registry.example.com/cilium/hubble-relay
-          tag: v1.19.5
-          useDigest: false
-          pullPolicy: IfNotPresent
-
-      ui:
-        backend:
-          image:
-            repository: registry.example.com/cilium/hubble-ui-backend
-            tag: v0.13.5
-            useDigest: false
-            pullPolicy: IfNotPresent
-        frontend:
-          image:
-            repository: registry.example.com/cilium/hubble-ui
-            tag: v0.13.5
-            useDigest: false
-            pullPolicy: IfNotPresent
-
     # ══════════════════════════════════════════════════════════════════════════════
     # CONFIGURATION
     # ══════════════════════════════════════════════════════════════════════════════
 
-    # Disable Cilium CNI agent and operator — this release installs only
-    # Hubble components on top of an existing Cilium installation.
+    # Disable Cilium agent and operator — already installed in the cluster.
     agent: false
     operator:
+      enabled: false
+
+    # Disable Envoy standalone DaemonSet — managed by the main Cilium release.
+    envoy:
       enabled: false
 
     hubble:
       enabled: true
 
-      # ── Relay ──────────────────────────────────────────────────────────────────
+      # Relay is already installed — do not deploy a second instance.
       relay:
-        enabled: true
-        rollOutPods: true
-        replicas: 1
-        resources:
-          requests:
-            cpu: 100m
-            memory: 64Mi
-          limits:
-            cpu: 500m
-            memory: 256Mi
-        # Relay runs as non-root — no kernel access required.
-        securityContext:
-          runAsNonRoot: true
-          runAsUser: 65534
-          runAsGroup: 65534
-          fsGroup: 65534
-          seccompProfile:
-            type: RuntimeDefault
-        podSecurityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop: [ALL]
+        enabled: false
 
-      # ── UI ─────────────────────────────────────────────────────────────────────
       ui:
         enabled: true
-        rollOutPods: true
-        replicas: 1
-        # standalone: skip checking that Hubble relay is installed in the same
-        # release — it is managed by the main Cilium HelmRelease.
+        # standalone: connects to the existing Hubble Relay instead of
+        # requiring relay to be part of this Helm release.
         standalone:
           enabled: true
+        replicas: 1
 
         backend:
+          image:
+            repository: registry.example.com/cilium/hubble-ui-backend
+            tag: "v0.13.5"
+            useDigest: false
+            pullPolicy: IfNotPresent
           resources:
             requests:
               cpu: 50m
@@ -95,20 +52,13 @@ data:
             limits:
               cpu: 500m
               memory: 256Mi
-          # Upstream default already sets allowPrivilegeEscalation: false.
-          # Add runAsNonRoot and seccompProfile on top.
-          securityContext:
-            allowPrivilegeEscalation: false
-            runAsNonRoot: true
-            runAsUser: 65534
-            runAsGroup: 65534
-            readOnlyRootFilesystem: true
-            seccompProfile:
-              type: RuntimeDefault
-            capabilities:
-              drop: [ALL]
 
         frontend:
+          image:
+            repository: registry.example.com/cilium/hubble-ui
+            tag: "v0.13.5"
+            useDigest: false
+            pullPolicy: IfNotPresent
           resources:
             requests:
               cpu: 50m
@@ -116,13 +66,3 @@ data:
             limits:
               cpu: 500m
               memory: 256Mi
-          securityContext:
-            allowPrivilegeEscalation: false
-            runAsNonRoot: true
-            runAsUser: 65534
-            runAsGroup: 65534
-            readOnlyRootFilesystem: true
-            seccompProfile:
-              type: RuntimeDefault
-            capabilities:
-              drop: [ALL]
