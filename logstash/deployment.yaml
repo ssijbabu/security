@@ -41,6 +41,17 @@ data:
     http.host: 0.0.0.0
     xpack.monitoring.enabled: false
     pipeline.ecs_compatibility: v8
+  jvm.options: |
+    -Xms512m
+    -Xmx512m
+    -XX:+UseG1GC
+    -XX:G1ReservePercent=25
+    -XX:InitiatingHeapOccupancyPercent=30
+    -XX:+HeapDumpOnOutOfMemoryError
+    -XX:HeapDumpPath=/usr/share/logstash/data
+    -Djava.awt.headless=true
+    -Dfile.encoding=UTF-8
+    -Djava.security.egd=file:/dev/urandom
 
 ---
 # Pipeline — Azure Event Hubs (Kafka endpoint) → stdout via Workload Identity
@@ -132,8 +143,7 @@ spec:
               value: "<eventhub-namespace>.servicebus.windows.net:9093"
             - name: KAFKA_TOPIC
               value: "<eventhub-name>"
-            - name: LS_JAVA_OPTS
-              value: "-Xmx512m -Xms512m"
+            # JVM heap and GC settings are in jvm.options (mounted below).
             # Injected automatically by the workload identity webhook when
             # azure.workload.identity/use: "true" is set on the pod.
             # Listed here for visibility; do not set values manually.
@@ -183,6 +193,10 @@ spec:
             - name: config
               mountPath: /usr/share/logstash/config/logstash.yml
               subPath: logstash.yml
+              readOnly: true
+            - name: config
+              mountPath: /usr/share/logstash/config/jvm.options
+              subPath: jvm.options
               readOnly: true
             - name: pipeline
               mountPath: /usr/share/logstash/pipeline/logstash.conf
