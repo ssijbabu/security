@@ -10,6 +10,9 @@ metadata:
 # ServiceAccount
 # No Role or ClusterRole needed — Logstash is a Kafka consumer that writes to
 # stdout and does not call the Kubernetes API.
+# The azure.workload.identity/client-id annotation binds this SA to the
+# User-Assigned Managed Identity that has Event Hubs Data Receiver on the
+# Event Hub namespace.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -18,6 +21,8 @@ metadata:
   labels:
     app.kubernetes.io/name: logstash-sirt
     app.kubernetes.io/part-of: security-stack
+  annotations:
+    azure.workload.identity/client-id: "<managed-identity-client-id>"
 automountServiceAccountToken: false
 
 ---
@@ -38,8 +43,13 @@ data:
     pipeline.ecs_compatibility: v8
 
 ---
-# Pipeline — Kafka input → stdout
-# Replace KAFKA_BOOTSTRAP_SERVERS and KAFKA_TOPIC via env vars or edit here.
+# Pipeline — Azure Event Hubs (Kafka endpoint) → stdout via Workload Identity
+# bootstrap_servers: <namespace>.servicebus.windows.net:9093
+# The OAuthBearer callback handler exchanges the OIDC token (injected at
+# $AZURE_FEDERATED_TOKEN_FILE by the workload identity webhook) for an
+# Azure AD access token scoped to Event Hubs.
+# Requires the azure-eventhubs-kafka JAR in the Logstash classpath — add it to
+# /usr/share/logstash/vendor/jar/kafka/ in your custom image.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -57,6 +67,10 @@ data:
         group_id => "logstash-sirt"
         codec => json
         consumer_threads => 1
+        security_protocol => "SASL_SSL"
+        sasl_mechanism => "OAUTHBEARER"
+        sasl_jaas_config => "org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required;"
+        sasl_login_callback_handler_class => "com.microsoft.azure.eventhubs.kafka.oauth.AzureEventHubsCallbackHandler"
       }
     }
     filter {
@@ -91,6 +105,9 @@ spec:
       labels:
         app.kubernetes.io/name: logstash-sirt
         app.kubernetes.io/version: "8.5.1"
+        # Required: triggers the Azure Workload Identity webhook to inject the
+        # OIDC projected token and the AZURE_* env vars into this pod.
+        azure.workload.identity/use: "true"
     spec:
       serviceAccountName: logstash-sirt
       automountServiceAccountToken: false
@@ -110,12 +127,18 @@ spec:
           imagePullPolicy: IfNotPresent
 
           env:
+            # Azure Event Hubs Kafka endpoint — port 9093, not 9092.
             - name: KAFKA_BOOTSTRAP_SERVERS
-              value: "kafka:9092"
+              value: "<eventhub-namespace>.servicebus.windows.net:9093"
             - name: KAFKA_TOPIC
-              value: "your-topic"
+              value: "<eventhub-name>"
             - name: LS_JAVA_OPTS
               value: "-Xmx512m -Xms512m"
+            # Injected automatically by the workload identity webhook when
+            # azure.workload.identity/use: "true" is set on the pod.
+            # Listed here for visibility; do not set values manually.
+            # AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_FEDERATED_TOKEN_FILE,
+            # AZURE_AUTHORITY_HOST
 
           securityContext:
             allowPrivilegeEscalation: false
