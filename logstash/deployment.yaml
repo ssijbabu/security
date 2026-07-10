@@ -16,10 +16,10 @@ metadata:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: logstash-sirt
+  name: logstash-yyyy
   namespace: logstash
   labels:
-    app.kubernetes.io/name: logstash-sirt
+    app.kubernetes.io/name: logstash-yyyy
     app.kubernetes.io/part-of: security-stack
   annotations:
     azure.workload.identity/client-id: "<managed-identity-client-id>"
@@ -31,10 +31,10 @@ automountServiceAccountToken: false
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: logstash-sirt-config
+  name: logstash-yyyy-config
   namespace: logstash
   labels:
-    app.kubernetes.io/name: logstash-sirt
+    app.kubernetes.io/name: logstash-yyyy
     app.kubernetes.io/part-of: security-stack
 data:
   logstash.yml: |
@@ -64,10 +64,10 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: logstash-sirt-pipeline
+  name: logstash-yyyy-pipeline
   namespace: logstash
   labels:
-    app.kubernetes.io/name: logstash-sirt
+    app.kubernetes.io/name: logstash-yyyy
     app.kubernetes.io/part-of: security-stack
 data:
   logstash.conf: |
@@ -75,7 +75,7 @@ data:
       kafka {
         bootstrap_servers => "${KAFKA_BOOTSTRAP_SERVERS}"
         topics => ["${KAFKA_TOPIC}"]
-        group_id => "logstash-sirt"
+        group_id => "logstash-yyyy"
         codec => json
         consumer_threads => 1
         security_protocol => "SASL_SSL"
@@ -95,17 +95,17 @@ data:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: logstash-sirt
+  name: logstash-yyyy
   namespace: logstash
   labels:
-    app.kubernetes.io/name: logstash-sirt
+    app.kubernetes.io/name: logstash-yyyy
     app.kubernetes.io/version: "8.5.1"
     app.kubernetes.io/part-of: security-stack
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: logstash-sirt
+      app.kubernetes.io/name: logstash-yyyy
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -114,13 +114,13 @@ spec:
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: logstash-sirt
+        app.kubernetes.io/name: logstash-yyyy
         app.kubernetes.io/version: "8.5.1"
         # Required: triggers the Azure Workload Identity webhook to inject the
         # OIDC projected token and the AZURE_* env vars into this pod.
         azure.workload.identity/use: "true"
     spec:
-      serviceAccountName: logstash-sirt
+      serviceAccountName: logstash-yyyy
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 120
 
@@ -206,7 +206,7 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: logstash-sirt-config
+            name: logstash-yyyy-config
         - name: pipeline
           configMap:
-            name: logstash-sirt-pipeline
+            name: logstash-yyyy-pipeline
