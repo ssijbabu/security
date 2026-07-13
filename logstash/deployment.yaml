@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: logstash
+  name: xxxx
   labels:
     app.kubernetes.io/part-of: security-stack
 
@@ -17,7 +17,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: logstash-yyyy
-  namespace: logstash
+  namespace: xxxx
   labels:
     app.kubernetes.io/name: logstash-yyyy
     app.kubernetes.io/part-of: security-stack
@@ -32,7 +32,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: logstash-yyyy-config
-  namespace: logstash
+  namespace: xxxx
   labels:
     app.kubernetes.io/name: logstash-yyyy
     app.kubernetes.io/part-of: security-stack
@@ -54,7 +54,7 @@ data:
     -Djava.security.egd=file:/dev/urandom
 
 ---
-# Pipeline — Azure Event Hubs (Kafka endpoint) → stdout via Workload Identity
+# Pipeline — Azure Event Hubs (Kafka endpoint) → Elasticsearch via Workload Identity
 # bootstrap_servers: <namespace>.servicebus.windows.net:9093
 # The OAuthBearer callback handler exchanges the OIDC token (injected at
 # $AZURE_FEDERATED_TOKEN_FILE by the workload identity webhook) for an
@@ -65,7 +65,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: logstash-yyyy-pipeline
-  namespace: logstash
+  namespace: xxxx
   labels:
     app.kubernetes.io/name: logstash-yyyy
     app.kubernetes.io/part-of: security-stack
@@ -88,7 +88,11 @@ data:
       # add filters here
     }
     output {
-      stdout { codec => rubydebug }
+      elasticsearch {
+        hosts => ["http://sirt-master.kube-system.svc.cluster.local:9200"]
+        index => "sirt-events-%{+YYYY.MM.dd}"
+        action => "index"
+      }
     }
 
 ---
@@ -96,7 +100,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: logstash-yyyy
-  namespace: logstash
+  namespace: xxxx
   labels:
     app.kubernetes.io/name: logstash-yyyy
     app.kubernetes.io/version: "8.5.1"
