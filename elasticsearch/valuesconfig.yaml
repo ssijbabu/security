@@ -23,14 +23,39 @@ data:
     clusterName: "sirt"
     nodeGroup: "master"
 
-    replicas: 1
-    minimumMasterNodes: 1
+    # 3 replicas, quorum of 2 — standard multi-node setup.
+    replicas: 3
+    minimumMasterNodes: 2
+
+    # Disable the credentials Secret entirely. When secret.enabled is true (the
+    # chart default) it generates a random password AND injects
+    # xpack.security.enabled=true as a StatefulSet env var, which overrides
+    # everything in elasticsearch.yml.
+    secret:
+      enabled: false
+
+    # Tell the chart to use plain HTTP — prevents it from wiring up TLS
+    # listeners or generating self-signed certificates.
+    protocol: http
+    createCert: false
 
     esConfig:
       elasticsearch.yml: |
-        xpack.security.enabled: false
         xpack.monitoring.collection.enabled: false
         ingest.geoip.downloader.enabled: false
+
+    # Belt-and-suspenders: extraEnvs are appended after chart-generated env
+    # vars, so these explicitly win even if the chart re-adds them.
+    extraEnvs:
+      - name: xpack.security.enabled
+        value: "false"
+      - name: xpack.security.enrollment.enabled
+        value: "false"
+
+    # kube-system has hundreds of Services. With enableServiceLinks: true
+    # (chart default) each one is injected as env vars into every pod, which
+    # slows startup and can exhaust the env var limit.
+    enableServiceLinks: false
 
     # Heap: set -Xms = -Xmx and keep ≤ 50% of the container memory limit
     # so the OS page cache has room to work.
@@ -72,10 +97,13 @@ data:
     sysctlInitContainer:
       enabled: false
 
+    # soft: schedule on separate nodes when possible, but don't block if there
+    # aren't enough. Use hard (chart default) only if you have ≥3 dedicated nodes.
     antiAffinity: "soft"
 
-    podDisruptionBudget:
-      enabled: false
+    # maxUnavailable controls the PodDisruptionBudget — this is the correct
+    # chart key (podDisruptionBudget.enabled is not a valid chart value).
+    maxUnavailable: 1
 
     service:
       type: ClusterIP
