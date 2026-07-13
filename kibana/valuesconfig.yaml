@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kibana-values
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/part-of: security-stack
+data:
+  values.yaml: |
+    # ══════════════════════════════════════════════════════════════════════════════
+    # IMAGES
+    # ══════════════════════════════════════════════════════════════════════════════
+    image: "registry.example.com/kibana/kibana"
+    imageTag: "8.5.1"
+    imagePullPolicy: IfNotPresent
+
+    # ══════════════════════════════════════════════════════════════════════════════
+    # CONFIGURATION
+    # ══════════════════════════════════════════════════════════════════════════════
+    replicas: 1
+
+    # Derived from Elasticsearch clusterName + nodeGroup: sirt-master.
+    # Both releases land in the same namespace so the short name resolves.
+    elasticsearchHosts: "http://sirt-master:9200"
+
+    kibanaConfig:
+      kibana.yml: |
+        server.name: kibana-sirt
+
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+
+    podSecurityContext:
+      fsGroup: 1000
+      runAsUser: 1000
+
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      capabilities:
+        drop: [ALL]
+      allowPrivilegeEscalation: false
+
+    service:
+      type: ClusterIP
+      port: 5601
+
+    podDisruptionBudget:
+      enabled: false

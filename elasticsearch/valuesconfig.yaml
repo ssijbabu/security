@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-values
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/part-of: security-stack
+data:
+  values.yaml: |
+    # ══════════════════════════════════════════════════════════════════════════════
+    # IMAGES
+    # ══════════════════════════════════════════════════════════════════════════════
+    image: "registry.example.com/elasticsearch/elasticsearch"
+    imageTag: "8.5.1"
+    imagePullPolicy: IfNotPresent
+
+    # ══════════════════════════════════════════════════════════════════════════════
+    # CONFIGURATION
+    # ══════════════════════════════════════════════════════════════════════════════
+
+    # clusterName + nodeGroup determine the Service name: sirt-master
+    # Kibana's elasticsearchHosts must match this.
+    clusterName: "sirt"
+    nodeGroup: "master"
+
+    replicas: 1
+    minimumMasterNodes: 1
+
+    esConfig:
+      elasticsearch.yml: |
+        discovery.type: single-node
+        xpack.security.enabled: false
+        xpack.monitoring.collection.enabled: false
+
+    # Heap: set -Xms = -Xmx and keep ≤ 50% of the container memory limit
+    # so the OS page cache has room to work.
+    esJavaOpts: "-Xms1g -Xmx1g"
+
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        cpu: "1"
+        memory: 2Gi
+
+    persistence:
+      enabled: true
+
+    volumeClaimTemplate:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 30Gi
+
+    podSecurityContext:
+      fsGroup: 1000
+      runAsUser: 1000
+
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      capabilities:
+        drop: [ALL]
+      allowPrivilegeEscalation: false
+
+    # Privileged init container that runs sysctl -w vm.max_map_count=262144
+    # on the node. Required by Elasticsearch. Disable and configure nodes
+    # separately (e.g. via a DaemonSet) if privileged containers are blocked
+    # by Azure Policy in your cluster.
+    sysctlInitContainer:
+      enabled: true
+
+    antiAffinity: "soft"
+
+    podDisruptionBudget:
+      enabled: false
+
+    service:
+      type: ClusterIP
