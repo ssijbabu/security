@@ -28,9 +28,9 @@ data:
 
     esConfig:
       elasticsearch.yml: |
-        discovery.type: single-node
         xpack.security.enabled: false
         xpack.monitoring.collection.enabled: false
+        ingest.geoip.downloader.enabled: false
 
     # Heap: set -Xms = -Xmx and keep ≤ 50% of the container memory limit
     # so the OS page cache has room to work.
@@ -66,12 +66,11 @@ data:
         drop: [ALL]
       allowPrivilegeEscalation: false
 
-    # Privileged init container that runs sysctl -w vm.max_map_count=262144
-    # on the node. Required by Elasticsearch. Disable and configure nodes
-    # separately (e.g. via a DaemonSet) if privileged containers are blocked
-    # by Azure Policy in your cluster.
+    # Azure Policy blocks privileged containers — disable the chart's sysctl
+    # init container. Set vm.max_map_count=262144 at the node pool level via
+    # AKS LinuxOSConfig instead (see note in helmrelease.yaml).
     sysctlInitContainer:
-      enabled: true
+      enabled: false
 
     antiAffinity: "soft"
 

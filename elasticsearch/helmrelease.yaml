@@ -20,13 +20,13 @@ spec:
 
   interval: 15m
   releaseName: elasticsearch
-  targetNamespace: elastic
-  storageNamespace: elastic
+  targetNamespace: kube-system
+  storageNamespace: kube-system
   maxHistory: 5
   timeout: 10m
 
   install:
-    createNamespace: true
+    createNamespace: false
     crds: Skip
     remediation:
       retries: 3
@@ -50,6 +50,27 @@ spec:
         target:
           group: apps
           kind: StatefulSet
+
+  # ── Node prerequisite ────────────────────────────────────────────────────────
+  # Elasticsearch requires vm.max_map_count ≥ 262144 on every node it can land
+  # on. The chart's sysctlInitContainer is disabled because Azure Policy blocks
+  # privileged containers. Configure it at the AKS node pool level instead:
+  #
+  #   az aks nodepool update \
+  #     --resource-group <rg> --cluster-name <cluster> --name <nodepool> \
+  #     --node-osdisk-type Managed \  # only if not already set
+  #     --aks-custom-headers LinuxOSConfig='{"sysctls":{"vmMaxMapCount":262144}}'
+  #
+  # For Terraform:
+  #   linux_os_config { sysctl_config { vm_max_map_count = 262144 } }
+  #
+  # For Bicep:
+  #   linuxOSConfig: { sysctls: { vmMaxMapCount: 262144 } }
+  #
+  # LinuxOSConfig can only be set at nodepool creation time on most AKS
+  # versions. If the nodepool already exists, recreate it or use a dedicated
+  # nodepool for Elasticsearch with the sysctl pre-configured.
+  # ─────────────────────────────────────────────────────────────────────────────
 
   valuesFrom:
     - kind: ConfigMap
