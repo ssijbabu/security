@@ -23,7 +23,6 @@ data:
     server.host: "0.0.0.0"
     server.name: "kibana-sirt"
     elasticsearch.hosts: ["http://sirt-master.kube-system.svc.cluster.local:9200"]
-    xpack.security.enabled: false
     monitoring.kibana.collection.enabled: false
 
 ---
