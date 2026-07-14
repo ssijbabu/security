@@ -23,9 +23,11 @@ data:
     clusterName: "sirt"
     nodeGroup: "master"
 
-    # 3 replicas, quorum of 2 — standard multi-node setup.
-    replicas: 3
-    minimumMasterNodes: 2
+    # 2 replicas, quorum of 1.
+    # maxUnavailable: 1 below means Kubernetes can evict 1 pod at a time,
+    # leaving 1 running — exactly meeting minimumMasterNodes.
+    replicas: 2
+    minimumMasterNodes: 1
 
     # Disable the credentials Secret entirely. When secret.enabled is true (the
     # chart default) it generates a random password AND injects
