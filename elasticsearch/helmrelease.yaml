@@ -72,6 +72,39 @@ spec:
   # nodepool for Elasticsearch with the sysctl pre-configured.
   # ─────────────────────────────────────────────────────────────────────────────
 
+  # ── Post-render patch ────────────────────────────────────────────────────────
+  # The chart hardcodes a complex cluster-health readiness script in the
+  # StatefulSet template. Values only control the timing params, not the
+  # command. Replace the entire probe via strategic merge patch.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: StatefulSet
+              name: sirt-master
+            patch: |
+              apiVersion: apps/v1
+              kind: StatefulSet
+              metadata:
+                name: sirt-master
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: elasticsearch
+                        readinessProbe:
+                          exec:
+                            command:
+                              - bash
+                              - -c
+                              - |
+                                curl -sf http://127.0.0.1:9200 >/dev/null
+                          initialDelaySeconds: 10
+                          periodSeconds: 10
+                          timeoutSeconds: 5
+                          failureThreshold: 3
+                          successThreshold: 3
+
   valuesFrom:
     - kind: ConfigMap
       name: elasticsearch-values
