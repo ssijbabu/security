@@ -89,7 +89,15 @@ data:
     }
     output {
       elasticsearch {
-        hosts => ["http://sirt-master.kube-system.svc.cluster.local:9200"]
+        # List all StatefulSet pods via the headless service so Logstash
+        # round-robins at the request level. The ClusterIP service only
+        # load-balances per TCP connection, so persistent connections would
+        # pin all writes to a single node.
+        hosts => [
+          "http://sirt-master-0.sirt-master-headless.kube-system.svc.cluster.local:9200",
+          "http://sirt-master-1.sirt-master-headless.kube-system.svc.cluster.local:9200",
+          "http://sirt-master-2.sirt-master-headless.kube-system.svc.cluster.local:9200"
+        ]
         index => "sirt-events-%{+YYYY.MM.dd}"
         action => "index"
       }
